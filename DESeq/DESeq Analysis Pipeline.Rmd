@@ -1,0 +1,322 @@
+---
+title: "RNA-Seq Analysis Pipeline"
+output:
+  html_document:
+  df_print: paged
+---
+
+###Load Packages###
+```{r results='hide', message=FALSE}
+library(here)
+library(DESeq2)
+library(tximeta)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(pheatmap)
+library(RColorBrewer)
+library(apeglm)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(org.Mm.eg.db)
+library(viridis)
+library(genefilter)
+```
+
+###Import Sample Metadata###
+```{r}
+coldata <- read.csv(here("20200826 B-ALL Validation Metadata.csv"), stringsAsFactors=T)
+coldata$names <- coldata$SampleName
+coldata$files <- file.path(here("quants"), paste0(coldata$SampleName,"_quant"),"quant.sf")
+file.exists(coldata$files)
+```
+
+###Annotate Transcripts and Summarize by Gene###
+```{r}
+se <- tximeta(coldata)
+dim(se)
+head(rownames(se))
+gse <- summarizeToGene(se)
+dim(gse)
+head(rownames(gse))
+```
+
+###Examine Data Structure and Filter Data###
+```{r message=FALSE}
+assayNames(gse)
+
+## Print First Three Rows of Sample Read Counts by Gene
+head(assay(gse), 3)
+
+## Print Total Mapped Read Counts by Sample
+round(colSums(assay(gse)) / 1e6, 1)
+
+## Print Metadata for First and Last Five Genes
+rowRanges(gse)
+
+## Print Chromosome Metadata
+seqinfo(rowRanges(gse))
+
+## Print Sample Metadata
+colData(gse)
+
+## Assign New Variable for Experimental Groups
+gse$SampleType <- gse$CellLine
+
+## Print Names of Experimental Groups
+levels(gse$SampleType)
+
+## Rename Experimental Groups If Necessary
+levels(gse$SampleType) <- c("SILVIA","LRMB")
+
+## Re-order Experimental Groups to List Control First
+gse$SampleType <- relevel(gse$SampleType,"LRMB")
+
+## Construct DESeq2 Data Set Comparing Experimental Groups in SampleType
+dds <- DESeqDataSet(gse, design = ~ SampleType)
+
+## Filter Rows by Minimum Expression Value
+keep <- (rowMeans(counts(dds[,1:3])) >= 10 | rowMeans(counts(dds[,4:6])) >= 10)
+ddsFilt <- dds[keep,]
+```
+
+###Apply Variance Stabilizing Transformation to Filtered Data###
+```{r eval=FALSE, include=FALSE}
+## VST Used for Large Datasets (n > 30), Faster But Less Accurate Than rlog
+vsdFilt <- vst(ddsFilt, blind = FALSE)
+
+## Print Top 6 Rows of VST Normalized Dataset
+head(assay(vsdFilt))
+
+## Print VST Sample Metadata
+colData(vsdFilt)
+```
+
+###Apply Variance Stabilizing Transformation to Data###
+```{r eval=FALSE, include=FALSE}
+## VST Used for Large Datasets (n > 30), Faster But Less Accurate Than rlog
+vsd <- vst(dds, blind = FALSE)
+
+## Print Top 6 Rows of VST Normalized Dataset
+head(assay(vsd))
+
+## Print VST Sample Metadata
+colData(vsd)
+```
+
+###Apply rlog Transformation to Filtered Data###
+```{r message=FALSE}
+## rlog Used for Small to Medium Datasets (n > 30), Slower but More Accurate than VST
+rldFilt <- rlog(ddsFilt, blind=FALSE)
+
+## Print Top 6 Rows of rlog Normalized Dataset
+head(assay(rldFilt))
+
+## Print rlog Sample Metadata
+colData(rldFilt)
+```
+
+###Calculate Euclidian Distance Between Samples With Transformed Filtered Data###
+```{r}
+sampleDistFilt <- dist(t(assay(rldFilt)))
+
+## Print Euclidian Distance Between Samples With Transformed Data
+sampleDistFilt
+```
+
+###Cluster Samples by Euclidian Distance and Plot Heatmap###
+```{r}
+sampleDistMatrix <- as.matrix(sampleDistFilt)
+dist.heatmap<- pheatmap(sampleDistMatrix,
+                        main = "Euclidean Distance of Normalized Gene Expression",
+                        clustering_distance_rows = sampleDistFilt,
+                        clustering_distance_cols = sampleDistFilt,
+                        border_color = "black",
+                        color = viridis(20))
+```
+
+```{r include=FALSE}
+## Write Heatmap to File
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+  stopifnot(!missing(x))
+  stopifnot(!missing(filename))
+  pdf(filename, width=width, height=height)
+  grid::grid.newpage()
+  grid::grid.draw(x$gtable)
+  dev.off()
+}
+save_pheatmap_pdf(dist.heatmap, "./Heatmap of Euclidian Distance of Normalized Gene Expression.pdf")
+```
+
+###Calculate Pearson Correlation Between Samples with Transformed Filtered Data###
+```{r}
+sampleCorFilt <- cor((assay(rldFilt)))
+sampleCorFilt <- round(sampleCorFilt, digits = 4)
+
+## Print Pearson Correlation Matrix of Samples
+sampleCorFilt
+```
+
+###Perform PCA of Samples###
+```{r}
+pcaData <- plotPCA(rldFilt, intgroup = "SampleType", returnData=TRUE)
+
+## Print PCA Data
+pcaData
+
+## Plot PCA Data
+pcaplot <- plotPCA(rldFilt, intgroup = "SampleType")
+pcaplot
+```
+
+```{r include=FALSE}
+## Write PCA plot to File
+pdf(file = "./RNA-seq Sample PCA Analysis.pdf", title = "RNA-seq Sample PCA Analysis")
+pcaplot
+dev.off()
+```
+
+###Create Matrix of Plots###
+```{r}
+## Convert rld Matrix to Tibble
+rldf <- as_tibble(assay(rldFilt)[,1:6])
+
+## Compare Expression Between Experimental Groups
+p1 <- ggplot(rldf, aes(LRMB1, SILVIA1)) + geom_point(size=.1)
+p2 <- ggplot(rldf, aes(LRMB2, SILVIA1)) + geom_point(size=.1)
+p3 <- ggplot(rldf, aes(LRMB3, SILVIA1)) + geom_point(size=.1)
+p4 <- ggplot(rldf, aes(LRMB1, SILVIA2)) + geom_point(size=.1)
+p5 <- ggplot(rldf, aes(LRMB2, SILVIA2)) + geom_point(size=.1)
+p6 <- ggplot(rldf, aes(LRMB3, SILVIA2)) + geom_point(size=.1)
+p7 <- ggplot(rldf, aes(LRMB1, SILVIA3)) + geom_point(size=.1)
+p8 <- ggplot(rldf, aes(LRMB2, SILVIA3)) + geom_point(size=.1)
+p9 <- ggplot(rldf, aes(LRMB3, SILVIA3)) + geom_point(size=.1)
+
+## Export Comparison Mat
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, ncol=3)
+```
+
+```{r include=FALSE}
+## Write Comparison Matrix to File
+pdf(file = "./Sample Read Count Comparison Matrix.pdf", onefile=FALSE, pointsize = 8)
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, ncol=3)
+dev.off()
+
+rm(list = c("p1","p2","p3","p4","p5","p6","p7","p8","p9"))
+```
+
+###Run DESeq2 Analysis of Expression Dataset###
+```{r message=FALSE}
+dds <- DESeq(dds)
+
+## Generate Results Table from DESeq2 Analysis
+res <- results(dds)
+
+## Sort Results Table by BH-Adjusted P-Value
+res <- res[order(res$padj),]
+
+## Print Top 6 Rows of Results Table
+head(res)
+
+## Print Number of Results with Less Than 5% FDR and Greater Than Two-Fold Change
+resSig <- subset(res, res$padj < 0.05 & abs(res$log2FoldChange) > 1)
+nrow(resSig)
+
+## Print Top 10 Significant Downregulated Genes
+head(resSig[order(resSig$log2FoldChange), ], 10)
+
+## Print Top 10 Signficant Upregulated Genes
+head(resSig[order(resSig$log2FoldChange,decreasing = TRUE), ], 10)
+```
+
+###Generate MA Plot of Significant Results###
+```{r}
+resultsNames(dds)
+
+resShrink <- lfcShrink(dds, coef="SampleType_SILVIA_vs_LRMB", type="apeglm")
+
+## Print MA Plot of Corrected LFC Estimates of Gene Expression
+plotMA(resShrink, ylim = c(-10, 10), alpha = 0.05)
+```
+
+```{r include=FALSE}
+## Write MA Plot to File
+pdf(file = "./RNA-seq Sample MA Plot.pdf", title = "Corrected LFC Estimates of Normalized Gene Expression")
+plotMA(resShrink, ylim = c(-10, 10), alpha = 0.05)
+dev.off()
+```
+
+###Add Gene Annotation to Results Table###
+```{r message=FALSE}
+ens.str <- substr(rownames(res), 1, 18)
+
+res$symbol <- mapIds(org.Mm.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res$entrez <- mapIds(org.Mm.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+```
+
+```{r eval=FALSE, include=FALSE}
+## For Human Samples Use The Following:
+ens.str <- substr(rownames(res), 1, 15)
+library(org.Hs.eg.db)
+res$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+
+###Generate Heatmap of Most Differentially Expressed Genes###
+```{r message=FALSE}
+## To change the number high variance genes in the heatmap, change '20' to desired value
+## Use homoskedastic data for visualization, typically VST or rlog transformed data
+topVarGenes <- head(order(rowVars(assay(rldFilt)), decreasing = TRUE), 20)
+heatmap.mat  <- assay(rldFilt)[topVarGenes, ]
+heatmap.mat  <- heatmap.mat - rowMeans(heatmap.mat)
+
+## Add gene annotation to heatmap
+heatmap.str <- substr((rownames(heatmap.mat)), 1, 18)
+
+heatmap.symbol <- as.data.frame(mapIds(org.Mm.eg.db,
+                                       keys=heatmap.str,
+                                       column="SYMBOL",
+                                       keytype="ENSEMBL",
+                                       multiVals="first"))
+
+colnames(heatmap.symbol) <- c("Symbol")
+
+heatmap.symbol[is.na(heatmap.symbol)] <- rownames(heatmap.symbol)[is.na(heatmap.symbol)]
+
+rownames(heatmap.mat) <- heatmap.symbol$Symbol
+
+gene.heatmap <- pheatmap(heatmap.mat,
+                         main = "Heatmap of Relative Variance in Gene Expression",
+                         border_color = "black",
+                         color = viridis(20))
+```
+```{r include=FALSE}
+## Write Heatmap to File
+save_pheatmap_pdf(gene.heatmap, "./Heatmap of Most Differentially Expressed Genes.pdf")
+```
+
+###Write DESeq2 Results to File###
+```{r}
+res <- res[order(res$padj),]
+resOrderedDF <- as.data.frame(res)
+resOrderedDF$ensembl <- row.names(resOrderedDF)
+resOrderedDF <- resOrderedDF[,c(9,7,8,1,2,6)]
+write.table(resOrderedDF, file = "./DESeq2_Results.txt", row.names = F)
+```
