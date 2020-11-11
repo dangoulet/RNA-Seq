@@ -25,7 +25,7 @@ library(genefilter)
 
 ###Import Sample Metadata###
 ```{r}
-coldata <- read.csv(here("20200826 B-ALL Validation Metadata.csv"), stringsAsFactors=T)
+coldata <- read.csv(here("Sample Metadata.csv"), stringsAsFactors=T)
 coldata$names <- coldata$SampleName
 coldata$files <- file.path(here("quants"), paste0(coldata$SampleName,"_quant"),"quant.sf")
 file.exists(coldata$files)
